@@ -1,6 +1,7 @@
 import numpy as np
 from keras.utils  import Sequence
 import keras.backend as K
+import cv2
 
 class NumpyArrayGenerator(Sequence):
     """
@@ -76,7 +77,7 @@ class NumpyArrayGenerator(Sequence):
         """
         batch_x = np.zeros(tuple([len(index_array)] + list(self.x.shape[1:])), 
                            dtype=K.floatx())
-        batch_y = np.zeros(tuple([len(index_array)] + list(self.y.shape[1])),
+        batch_y = np.zeros((len(index_array), self.y.shape[1]),
                            dtype=K.floatx())
         for i, j in enumerate(index_array):
             x = self.x[j]
@@ -163,7 +164,7 @@ class DirectoryGenerator(Sequence):
         """
         batch_x = np.zeros(tuple([len(index_array)] + list(self.target_image_size) 
                            + [self.out_channels]), dtype=K.floatx())
-        batch_y = np.zeros(tuple([len(index_array)] + list(self.label.shape[1])),
+        batch_y = np.zeros((len(index_array), self.label.shape[1]),
                            dtype=K.floatx())
         for i, j in enumerate(index_array):
             x = self.load_image(self.data_file[j])
@@ -178,11 +179,20 @@ class DirectoryGenerator(Sequence):
         if self.out_channels == 1:
             image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
         else:
-            image = cv2.imrerad(image_path, cv2.IMREAD_COLOR)
-            image = cv2.cvtColor(image, cv2.BGR2RGB)
-
-        if image.shape[0] != self.target_image_size[0] or
+            image = cv2.imread(image_path, cv2.IMREAD_COLOR)
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        if image.shape[0] != self.target_image_size[0] or \
             image.shape[1] != self.target_image_size[1]:
             image = cv2.resize(image, self.target_image_size,
-                               interpolation=cv2.INTER_CUBIC)
+                            interpolation=cv2.INTER_NEAREST)
         return image
+
+    def center_crop(self, image):
+        centerw, centerh = image.shape[0] // 2,  \
+                           image.shape[1] //2
+        halfw, halfh = self.target_image_size[0] // 2, \
+                       self.target_image_size[1] // 2
+        return image[centerw-halfw:centerw-halfw+self.target_image_size[0], \
+                     centerh-halfh:centerh-halfh+self.target_image_size[1], :]
+        
+        

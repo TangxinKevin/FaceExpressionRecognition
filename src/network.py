@@ -5,11 +5,11 @@ from keras.applications.vgg16 import VGG16
 from keras.applications.vgg19 import VGG19
 from keras.applications.resnet50 import ResNet50
 
-from keras.callbacks import ReduceLROnPlateau, EarlyStopping, CSVLogger,\
-                            ModelCheckpoint
-from keras.layers import Dense, Flatten, GlobalAveragePooling2D,
-    Conv2D, MaxPooling3D, Input, Dropout
-from keras.layers import SeparableConv2D, Add
+from keras.callbacks import ReduceLROnPlateau, EarlyStopping, CSVLogger
+from keras.callbacks import ModelCheckpoint, LearningRateScheduler
+from keras.layers import Dense, Flatten, GlobalAveragePooling2D 
+from keras.layers import Conv2D, MaxPooling2D, Input, Dropout, Activation
+from keras.layers import SeparableConv2D, add
 from keras.layers.normalization import BatchNormalization
 from keras.regularizers import l2
 from keras.models import Model, Sequential
@@ -18,10 +18,12 @@ from keras.utils import plot_model
 from src.callback import PlotLosses
 import json
 import os
+import math
 
 class _FERNetwork():
-    def __init__(self, emotion_map):
+    def __init__(self, emotion_map, learning_rate):
         self.emotion_map = emotion_map
+        self.learning_rate = learning_rate
         self._init_model()
     
     def _init_model(self):
@@ -32,31 +34,33 @@ class _FERNetwork():
         raise NotImplementedError(
             "Class %s doesn't implement fit()" % self.__class__.__name__)
 
-    def fit_generator(self, generator, learning_rate, dataset_name,
+    def fit_generator(self, generator, dataset_name,
                       log_file_path, model_path, 
                       validation_data=None, epochs=50):
-        log_file = os.path.join(log_file_path, self.__class__ + '_' + dataset_name
-                                + '_emotion_training.log')
-        csv_logger = CSVLogger(log_file_path, append=False)
-        early_stop = EarlyStopping('val_loss', patience=5)
-        reduce_lr = ReduceLROnPlateau('val_loss', factor=0.5,
-                                      patience=5, verbose=1)
-        model_name = os.path.join(model_path, dataset_name + '_' 
-                                  + self.__class__ + '.{epoch:02d}-{val_acc:.2f}.hdf5')
-        model_checkpoint = ModelCheckpoint(model_name, 'val_loss', verbose=1,
+        log_file = os.path.join(log_file_path, self.__class__.__name__ + \
+            '_' + dataset_name + '_emotion_training.log')
+        csv_logger = CSVLogger(log_file, append=False)
+        reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.9,
+                              patience=50, min_lr=0.000001)
+        model_name = os.path.join(model_path, dataset_name + '_' \
+                                  + self.__class__.__name__ + '.{epoch:02d}-{val_acc:.2f}.hdf5')
+        model_checkpoint = ModelCheckpoint(model_name, 'val_acc', verbose=1,\
                                            save_best_only=True)
-        callbacks = [model_checkpoint, csv_logger, early_stop, PlotLosses,
-                     reduce_lr]
-        rmsprop = optimizers.RMSprop(lr=learning_rate)
-        self.model.compile(optimize=rmsprop, loss='categorical_crossentropy',
+        callbacks = [model_checkpoint, csv_logger, reduce_lr]
+        adam = optimizers.Adam(lr=self.learning_rate)
+        
+        self.model.compile(optimizer=adam, loss='categorical_crossentropy',
                            metrics=['accuracy'])
         self.model.fit_generator(generator=generator,
-                                 validation_data=validation_data, 
                                  epochs=epochs,
-                                 callbacks=callbacks)
+                                 callbacks=callbacks,
+                                 validation_data=validation_data)
 
     def predict(self, images):
         self.model.predict(images)
+    
+    def evaluate(self, images, labels):
+        return self.model.evaluate(images, labels)
     
     def save_model_path(self):
         plot_model(self.model, to_file='output/model.png')
@@ -75,6 +79,9 @@ class _FERNetwork():
     
     def import_model_weights(self, weights_filepath):
         self.model.load_weights(weights_filepath, by_name=True)
+
+
+
 
 
 class TransferLearningDeepCNN(_FERNetwork):
@@ -100,11 +107,14 @@ class TransferLearningDeepCNN(_FERNetwork):
     def __init__(self, num_layers, 
                  input_shape, 
                  model_name, 
-                 emotion_map):
+                 emotion_map,
+                 learning_rate):
         self.num_layers_untrainable = num_layers
         self.model_name = model_name
         self.input_shape = input_shape
-        super(TransferLearningDeepCNN, self).__init__(emotion_map)
+        super(TransferLearningDeepCNN, self).__init__(emotion_map, 
+                                                      learning_rate)
+        self._init_model()
     
     def _init_model(self):
         """
@@ -124,13 +134,13 @@ class TransferLearningDeepCNN(_FERNetwork):
             activation='softmax', name='prediction')(top_layer_model)
         
         model = Model(input=base_model.input,
-                      output=prediction_layer)
-        print(model.summary())
+                        output=prediction_layer)
+        model.summary()
         
         for layer in base_model.layers:
             layer.trainable = False
-        model.compile(optimize='rmsprop', loss='categorical_crossentropy',
-                      metrics=['accuracy'])
+#        model.compile(optimizer='rmsprop', loss='categorical_crossentropy',
+#                      metrics=['accuracy'])
         self.mdoel = model
 
     
@@ -198,11 +208,13 @@ class ConvolutionalNN(_FERNetwork):
         filters_list: list of filters per layer in CNN
         kernel_size: size of sliding window for each layer of CNN
     """
-    def __init__(self, input_shape, emotion_map, kernel_size=(3, 3)):
+    def __init__(self, input_shape, emotion_map, learning_rate,
+                 kernel_size=(3, 3)):
         self.input_shape = input_shape
         self.kernel_size = kernel_size
-        super(ConvolutionalNN, self).__init__(emotion_map)
-    
+        super(ConvolutionalNN, self).__init__(emotion_map, 
+                                              learning_rate)
+
     def _init_model(self):
         """
         Composes all layers of 2D CNN.
@@ -236,10 +248,13 @@ class ConvolutionalNN(_FERNetwork):
                         callbacks=[ReduceLROnPlateau(), EarlyStopping(patience=5)])
 
 class Mini_Xception(_FERNetwork):
-    def __init__(self, input_shape, l2_regularization=0.0001, emotion_map):
+    def __init__(self, input_shape, emotion_map, learning_rate,
+                 l2_regularization=0.0001):
         self.input_shape = input_shape
         self.l2_regularization = l2_regularization
-        super(Mini_Xception, self).__init__(emotion_map)
+        super(Mini_Xception, self).__init__(emotion_map,
+                                            learning_rate)
+
 
     def _init_model(self):
 
@@ -247,47 +262,47 @@ class Mini_Xception(_FERNetwork):
         input_image = Input(shape=self.input_shape)
 
         # block1
-        x = Conv2D(16, (3, 3), padding='same', use_bias=False, 
+        x = Conv2D(8, (3, 3), padding='same', use_bias=False, 
             kernel_regularizer=regularization, name='block1_conv1')(input_image)
         x = BatchNormalization(name='block1_conv1_bn')(x)
         x = Activation('relu', name='block1_conv1_act')(x)
-        x = Conv2D(16, (3, 3), padding='same', use_bias=False,
+        x = Conv2D(8, (3, 3), padding='same', use_bias=False,
             kernel_regularizer=regularization, name='block1_conv2')(x)
         x = BatchNormalization(name='block1_conv2_bn')(x)
         x = Activation('relu', name='block1_conv2_act')(x)
 
         # block2
+        residual = Conv2D(16, (1, 1), strides=(2, 2),
+                          padding='same', use_bias=False)(x)
+        residual = BatchNormalization()(residual)
+
+        x = SeparableConv2D(16, (3, 3), padding='same', use_bias=False,
+                            name='block2_sepconv1')(x)
+        x = BatchNormalization(name='block2_sepconv1_bn')(x)
+        x = Activation('relu', name='block2_sepconv2_act')(x)
+        x = SeparableConv2D(16, (3, 3), padding='same', use_bias=False,
+                            name='block2_sepconv2')(x)
+        x = BatchNormalization(name='block2_sepconv2_bn')(x)
+
+        x = MaxPooling2D((3, 3), strides=(2, 2), padding='same', name='block2_pool')(x)
+        x = add([x, residual])
+
+        # block3
         residual = Conv2D(32, (1, 1), strides=(2, 2),
                           padding='same', use_bias=False)(x)
         residual = BatchNormalization()(residual)
 
         x = SeparableConv2D(32, (3, 3), padding='same', use_bias=False,
-                            name='block2_sepconv1')(x)
-        x = BatchNormalization(name='block2_sepconv1_bn')(x)
-        x = Activation('relu', name='block2_sepconv2_act')(x)
-        x = SeparableConv2D(32, (3, 3), padding='same', use_bias=False,
-                            name='block2_sepconv2')(x)
-        x = BatchNormalization(name='block2_sepconv2_bn')(x)
-
-        x = MaxPooling2D((3, 3), strides=(2, 2), padding='same', name='block2_pool')(x)
-        x = Add([x, residual])
-
-        # block3
-        residual = Conv2D(64, (1, 1), strides=(2, 2),
-                          padding='same', use_bias=False)(x)
-        residual = BatchNormalization()(residual)
-
-        x = SeparableConv2D(64, (3, 3), padding='same', use_bias=False,
                             name='block3_sepconv1')(x)
         x = BatchNormalization(name='block3_sepconv1_bn')(x)
         x = Activation('relu', name='block3_sepconv2_act')(x)
-        x = SeparableConv2D(64, (3, 3), padding='same', use_bias=False,
+        x = SeparableConv2D(32, (3, 3), padding='same', use_bias=False,
                             name='block3_sepconv2')(x)
         x = BatchNormalization(name='block3_sepconv2_bn')(x)
 
         x = MaxPooling2D((3, 3), strides=(
             2, 2), padding='same', name='block3_pool')(x)
-        x = Add([x, residual])
+        x = add([x, residual])
     
         # block4
         residual = Conv2D(64, (1, 1), strides=(2, 2),
@@ -304,7 +319,7 @@ class Mini_Xception(_FERNetwork):
 
         x = MaxPooling2D((3, 3), strides=(
             2, 2), padding='same', name='block4_pool')(x)
-        x = Add([x, residual])
+        x = add([x, residual])
 
         # block5
         residual = Conv2D(128, (1, 1), strides=(2, 2),
@@ -320,7 +335,7 @@ class Mini_Xception(_FERNetwork):
         x = BatchNormalization(name='block5_sepconv2_bn')(x)
 
         x = MaxPooling2D((3, 3), strides=(2, 2), padding='same', name='block5_pool')(x)
-        x = Add([x, residual])
+        x = add([x, residual])
 
         x = Conv2D(512, (4, 4), strides=(1, 1), padding='same', 
                    name='block6_conv')(x)
@@ -332,9 +347,10 @@ class Mini_Xception(_FERNetwork):
         self.model = model
 
 class Varaint_VGG(_FERNetwork):
-    def __init__(self, input_shape, emotion_map):
+    def __init__(self, input_shape, emotion_map, learning_rate):
         self.input_shape = input_shape
-        super(Varaint_VGG, self).__init__(emotion_map)
+        super(Varaint_VGG, self).__init__(emotion_map,
+                                          learning_rate)
 
     def _init_model(self):
         input_image = Input(shape=self.input_shape)
