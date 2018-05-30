@@ -11,8 +11,10 @@ import keras.backend as K
 
 class FER2013():
     def __init__(self, 
-                 target_emotion_map, row_image_size,
-                 target_image_size, out_channels, 
+                 target_emotion_map,
+                 row_image_size,
+                 target_image_size, 
+                 out_channels, 
                  data_csv_path):
         self.target_emotion_map = target_emotion_map
         self.row_image_size = row_image_size
@@ -39,7 +41,6 @@ class FER2013():
             if label_class not in self.target_emotion_map.keys():
                 continue
             labels.append(label_class)
-
             image = np.asarray([int(i) for i in pixel.split(' ')],
                                dtype=np.uint8).reshape(self.row_image_size)
             image = self._reshape(image)

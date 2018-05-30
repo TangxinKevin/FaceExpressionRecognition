@@ -1,5 +1,5 @@
 import numpy as np
-from keras.utils  import Sequence
+from keras.utils import Sequence
 import keras.backend as K
 import cv2
 
@@ -8,7 +8,7 @@ class NumpyArrayGenerator(Sequence):
     Generator for numpy array
     """
     def __init__(self, x, y, image_data_generator,
-                 batch_size=32, shuffle=False, seed=None):
+                 batch_size=32, shuffle=True, seed=None):
         self.image_data_generator = image_data_generator
         self.x = np.asarray(x, dtype=K.floatx())
         if self.x.ndim != 4:
